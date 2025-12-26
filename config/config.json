@@ -1,0 +1,15 @@
+{
+  "port": "8080",
+  "tls_port": "8443",
+  "cert_file": "server.crt",
+  "key_file": "server.key",
+  "strategy": "adaptive",
+  "backends": [
+    "http://localhost:8001",
+    "http://localhost:8002",
+    "http://localhost:8003"
+  ],
+  "health_check_path": "/health",
+  "health_check_interval": 5
+}
+
