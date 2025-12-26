@@ -4,15 +4,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
 	"time"
-	"math/rand"
+
 	// "http"
 	"github.com/vvijay2468/load-balancer/internal/backend"
 	"github.com/vvijay2468/load-balancer/internal/balancer"
 	"github.com/vvijay2468/load-balancer/internal/metrics"
+	"github.com/vvijay2468/load-balancer/internal/ratelimit"
 )
 
 // Config holds JSON config values
@@ -35,6 +37,10 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
 }
+
+
+
+var httpsMux = http.NewServeMux()
 
 func main() {
 	// 1) Load config.json
@@ -66,14 +72,25 @@ func main() {
 	}()
 	// 4) Setup HTTP handlers
 
-	// HTTPS mux (real LB)
-	httpsMux := http.NewServeMux()
-
-	httpsMux.Handle("/metrics", metrics.Handler())
+	rl := ratelimit.NewManager()
 
 	httpsMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
+		// 1️ Rate limiting (FIRST)
+		clientIP, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			http.Error(w, "invalid client address", http.StatusBadRequest)
+			return
+		}
+
+		if !rl.Allow(clientIP) {
+			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			metrics.RateLimitedRequests.Inc()
+			return
+		}
+
+		// 2️ Pick backend
 		var b *backend.Backend
 		switch currentStrategy {
 		case "least_conn":
@@ -87,33 +104,44 @@ func main() {
 		}
 
 		if b == nil {
-			http.Error(w, "No healthy backends available", http.StatusServiceUnavailable)
-			metrics.RequestCount.WithLabelValues(r.Method, "503").Inc()
+			http.Error(w, "no healthy backends", http.StatusServiceUnavailable)
 			return
 		}
 
+		// 3️ Proxy with status recording
 		b.IncrementConnections()
 		defer b.DecrementConnections()
-		b.Serve(w, r)
 
+		rec := &statusRecorder{
+			ResponseWriter: w,
+			status:         http.StatusOK,
+		}
+
+		b.Serve(rec, r)
+
+		// 4️ Circuit breaker feedback
+		if rec.status >= 500 {
+			b.RecordFailure()
+		} else {
+			b.RecordSuccess()
+		}
+
+		// 5️ Metrics + latency
 		duration := time.Since(start)
 
 		b.UpdateLatency(duration)
+
 		metrics.BackendLatencyEWMA.
 			WithLabelValues(b.URL.Host).
 			Set(b.GetLatencyEWMA())
 
-		rec := &statusRecorder{
-			ResponseWriter: w,
-			status:         200,
-		}
 		metrics.RequestCount.
 			WithLabelValues(r.Method, fmt.Sprintf("%d", rec.status)).
 			Inc()
+
 		metrics.RequestDuration.
 			WithLabelValues(r.Method, fmt.Sprintf("%d", rec.status)).
 			Observe(duration.Seconds())
-
 	})
 
 	// HTTP mux (metrics + redirect)

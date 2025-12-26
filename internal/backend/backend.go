@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+type CircuitState int
+
+const (
+	CLOSED CircuitState = iota
+	OPEN
+	HALF_OPEN
+)
+
 // Backend represents a backend server
 type Backend struct {
 	URL   *url.URL
@@ -18,6 +26,10 @@ type Backend struct {
 	currConnections int32
 	LatencyEWMA     float64
 	mu              sync.RWMutex
+	cbState         CircuitState
+	failures        int
+	lastFailure     time.Time
+	cbMu            sync.Mutex
 }
 
 // serverPool holds all registered backends
@@ -48,6 +60,48 @@ func AddBackend(rawURL string) {
 	poolMu.Unlock()
 
 	log.Printf("Added backend: %s\n", rawURL)
+}
+func (b *Backend) AllowRequest() bool {
+	b.cbMu.Lock()
+	defer b.cbMu.Unlock()
+
+	switch b.cbState {
+	case OPEN:
+		if time.Since(b.lastFailure) > 5*time.Second {
+			b.cbState = HALF_OPEN
+			return true
+		}
+		return false
+	case HALF_OPEN, CLOSED:
+		return true
+	}
+	return false
+}
+
+func (b *Backend) RecordSuccess() {
+	b.cbMu.Lock()
+	defer b.cbMu.Unlock()
+
+	b.failures = 0
+	b.cbState = CLOSED
+}
+
+func (b *Backend) RecordFailure() {
+	b.cbMu.Lock()
+	defer b.cbMu.Unlock()
+
+	b.failures++
+	b.lastFailure = time.Now()
+
+	if b.failures >= 3 {
+		b.cbState = OPEN
+	}
+}
+
+func (b *Backend) CircuitState() CircuitState {
+	b.cbMu.Lock()
+	defer b.cbMu.Unlock()
+	return b.cbState
 }
 
 // HealthCheckAll checks the health of all backends
@@ -125,14 +179,11 @@ func (b *Backend) GetConnections() int64 {
 	return int64(b.currConnections)
 }
 
-
 func (b *Backend) ActiveConnections() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return int(b.currConnections)
 }
-
-
 
 func (b *Backend) UpdateLatency(d time.Duration) {
 	b.mu.Lock()
@@ -153,4 +204,3 @@ func (b *Backend) GetLatencyEWMA() float64 {
 	defer b.mu.RUnlock()
 	return b.LatencyEWMA
 }
-

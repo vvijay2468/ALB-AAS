@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -38,6 +39,17 @@ var (
 		prometheus.GaugeOpts{
 			Name: "lb_backend_latency_ewma_ms",
 			Help: "EWMA latency per backend in milliseconds",
+		},
+		[]string{"backend"},
+	)
+	RateLimitedRequests = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "lb_rate_limited_requests_total",
+		Help: "Total number of rate limited requests",
+	})
+	BackendCircuitState = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "lb_backend_circuit_state",
+			Help: "Circuit breaker state per backend",
 		},
 		[]string{"backend"},
 	)

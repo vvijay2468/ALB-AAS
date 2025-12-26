@@ -3,7 +3,7 @@ package balancer
 import (
 	"math"
 	"sync"
-	"math/rand"
+
 	"github.com/vvijay2468/load-balancer/internal/backend"
 )
 
@@ -39,26 +39,23 @@ func NextBackend() *backend.Backend {
 	// None healthy
 	return nil
 }
+// NextBackendAdaptive selects the backend based on adaptive load balancing strategy.
 func NextBackendAdaptive() *backend.Backend {
-	backends := backend.GetAliveBackends()
-	if len(backends) == 0 {
-		return nil
-	}
+	backends := backend.GetServerPool()
 
 	var best *backend.Backend
 	bestScore := math.MaxFloat64
 
 	for _, b := range backends {
-		latency := b.GetLatencyEWMA()
-		conns := b.GetConnections()
+		if !b.IsAlive() || !b.AllowRequest() {
+			continue
+		}
 
-		score := latency * float64(conns+1)+rand.Float64()
-
+		score := b.LatencyEWMA * float64(b.ActiveConnections()+1)
 		if score < bestScore {
 			bestScore = score
 			best = b
 		}
 	}
-
 	return best
 }
